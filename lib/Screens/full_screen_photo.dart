@@ -1,16 +1,18 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:video_player/video_player.dart';
 import '../models/photo_model.dart';
-import '../services/hive_service.dart';
 
 class FullScreenPhoto extends StatefulWidget {
-  final List<PhotoModel> photos;
-  final int initialIndex;
+  final PhotoModel media;
+  final VoidCallback onDelete;
 
   const FullScreenPhoto({
     Key? key,
-    required this.photos,
-    required this.initialIndex,
+    required this.media,
+    required this.onDelete,
   }) : super(key: key);
 
   @override
@@ -18,53 +20,85 @@ class FullScreenPhoto extends StatefulWidget {
 }
 
 class _FullScreenPhotoState extends State<FullScreenPhoto> {
-  late PageController _pageController;
-  late int _currentIndex;
+  VideoPlayerController? _videoController;
+  bool _isVideoInitialized = false;
+  bool _showControls = true;
+  bool _isFullScreen = false;
 
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialIndex;
-    _pageController = PageController(initialPage: widget.initialIndex);
+    if (widget.media.isVideo) {
+      _initializeVideo();
+    }
+  }
+
+  Future<void> _initializeVideo() async {
+    _videoController = VideoPlayerController.file(File(widget.media.path));
+    
+    try {
+      await _videoController!.initialize();
+      setState(() {
+        _isVideoInitialized = true;
+      });
+      
+      // Auto-hide controls after 3 seconds
+      _startControlsTimer();
+      
+      _videoController!.addListener(() {
+        if (mounted) setState(() {});
+      });
+    } catch (e) {
+      print('Error initializing video: $e');
+    }
+  }
+
+  void _startControlsTimer() {
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted && _videoController != null && _videoController!.value.isPlaying) {
+        setState(() {
+          _showControls = false;
+        });
+      }
+    });
+  }
+
+  void _toggleFullScreen() {
+    setState(() {
+      _isFullScreen = !_isFullScreen;
+    });
+    
+    if (_isFullScreen) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+      ]);
+    }
   }
 
   @override
   void dispose() {
-    _pageController.dispose();
+    _videoController?.dispose();
+    // Reset system UI when leaving
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
     super.dispose();
   }
-
-  PhotoModel get currentPhoto => widget.photos[_currentIndex];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              currentPhoto.name,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w500,
-                fontSize: 16,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-            Text(
-              '${_currentIndex + 1} of ${widget.photos.length}',
-              style: const TextStyle(
-                color: Colors.grey,
-                fontSize: 12,
-                fontWeight: FontWeight.normal,
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.black.withOpacity(0.5),
+      appBar: _isFullScreen ? null : AppBar(
+        backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.white),
@@ -72,312 +106,165 @@ class _FullScreenPhotoState extends State<FullScreenPhoto> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.info_outline, color: Colors.white),
-            onPressed: () => _showPhotoInfo(context),
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.white),
-            onPressed: () => _confirmDelete(context),
+            icon: const Icon(Icons.delete, color: Colors.white),
+            onPressed: _showDeleteDialog,
           ),
         ],
       ),
-      body: Stack(
+      body: widget.media.isVideo ? _buildVideoPlayer() : _buildPhotoViewer(),
+    );
+  }
+
+  Widget _buildPhotoViewer() {
+    return PhotoView(
+      imageProvider: MemoryImage(widget.media.imageData),
+      backgroundDecoration: const BoxDecoration(
+        color: Colors.black,
+      ),
+      minScale: PhotoViewComputedScale.contained,
+      maxScale: PhotoViewComputedScale.covered * 3,
+      heroAttributes: PhotoViewHeroAttributes(tag: widget.media.id),
+    );
+  }
+
+  Widget _buildVideoPlayer() {
+    if (!_isVideoInitialized) {
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
+    }
+
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _showControls = !_showControls;
+        });
+        if (_showControls && _videoController!.value.isPlaying) {
+          _startControlsTimer();
+        }
+      },
+      child: Stack(
         children: [
-          PageView.builder(
-            controller: _pageController,
-            onPageChanged: (index) {
-              setState(() {
-                _currentIndex = index;
-              });
-            },
-            itemCount: widget.photos.length,
-            itemBuilder: (context, index) {
-              final photo = widget.photos[index];
-              return Hero(
-                tag: photo.id,
-                child: PhotoView(
-                  imageProvider: MemoryImage(photo.imageData),
-                  backgroundDecoration: const BoxDecoration(
-                    color: Colors.black,
-                  ),
-                  minScale: PhotoViewComputedScale.contained,
-                  maxScale: PhotoViewComputedScale.covered * 3.0,
-                  initialScale: PhotoViewComputedScale.contained,
-                  heroAttributes: PhotoViewHeroAttributes(tag: photo.id),
-                  loadingBuilder: (context, event) {
-                    return const Center(
-                      child: CircularProgressIndicator(
-                        valueColor:
-                            AlwaysStoppedAnimation<Color>(Color(0xFF6366F1)),
-                      ),
-                    );
-                  },
-                  errorBuilder: (context, error, stackTrace) {
-                    return const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.error_outline,
-                            color: Colors.white,
-                            size: 64,
-                          ),
-                          SizedBox(height: 16),
-                          Text(
-                            'Failed to load image',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              );
-            },
-          ),
-          // Navigation indicators
-          if (widget.photos.length > 1)
-            Positioned(
-              bottom: 50,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: List.generate(
-                      widget.photos.length,
-                      (index) => Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 3),
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: index == _currentIndex
-                              ? const Color(0xFF6366F1)
-                              : Colors.white.withOpacity(0.3),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+          Center(
+            child: AspectRatio(
+              aspectRatio: _videoController!.value.aspectRatio,
+              child: VideoPlayer(_videoController!),
             ),
-          // Navigation arrows (optional, for desktop/tablet users)
-          if (widget.photos.length > 1) ...[
-            // Left arrow
-            if (_currentIndex > 0)
-              Positioned(
-                left: 16,
-                top: 0,
-                bottom: 0,
-                child: Center(
-                  child: GestureDetector(
-                    onTap: _previousPhoto,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.chevron_left,
-                        color: Colors.white,
-                        size: 24,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            // Right arrow
-            if (_currentIndex < widget.photos.length - 1)
-              Positioned(
-                right: 16,
-                top: 0,
-                bottom: 0,
-                child: Center(
-                  child: GestureDetector(
-                    onTap: _nextPhoto,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.chevron_right,
-                        color: Colors.white,
-                        size: 24,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+          ),
+          if (_showControls) _buildVideoControls(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVideoControls() {
+    final duration = _videoController!.value.duration;
+    final position = _videoController!.value.position;
+    final isPlaying = _videoController!.value.isPlaying;
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.black.withOpacity(0.7),
+            Colors.transparent,
+            Colors.transparent,
+            Colors.black.withOpacity(0.7),
           ],
-        ],
-      ),
-    );
-  }
-
-  void _nextPhoto() {
-    if (_currentIndex < widget.photos.length - 1) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
-
-  void _previousPhoto() {
-    if (_currentIndex > 0) {
-      _pageController.previousPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
-
-  void _confirmDelete(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF2D2D2D),
-        title: const Text(
-          'Delete Photo',
-          style: TextStyle(color: Colors.white),
         ),
-        content: const Text(
-          'Are you sure you want to delete this photo?',
-          style: TextStyle(color: Colors.grey),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel',
-                style: TextStyle(color: Color(0xFF6366F1))),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(context).pop(); // Pops the dialog
-              _deletePhoto();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.redAccent,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Delete'),
-          ),
-        ],
       ),
-    );
-  }
-
-  void _deletePhoto() async {
-    final photoId = currentPhoto.id;
-    await HiveService.deletePhoto(photoId);
-
-    // Pop the current screen and pass a result to indicate a refresh is needed.
-    if (mounted) {
-      Navigator.of(context).pop(true);
-    }
-  }
-
-  void _showPhotoInfo(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF2D2D2D),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+      child: Column(
+        children: [
+          // Top controls
+          if (!_isFullScreen)
+            SafeArea(
+              child: Row(
                 children: [
-                  const Icon(
-                    Icons.info_outline,
-                    color: Color(0xFF6366F1),
-                    size: 24,
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
                   ),
-                  const SizedBox(width: 12),
-                  const Text(
-                    'Photo Information',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.white),
+                    onPressed: _showDeleteDialog,
                   ),
                 ],
               ),
-              const SizedBox(height: 24),
-              _buildInfoRow('Name', currentPhoto.name),
-              _buildInfoRow('Added', _formatDate(currentPhoto.dateAdded)),
-              _buildInfoRow('Size', _formatSize(currentPhoto.imageData.length)),
-              _buildInfoRow('ID', currentPhoto.id),
-              _buildInfoRow('Position',
-                  '${_currentIndex + 1} of ${widget.photos.length}'),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6366F1),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Close'),
-                ),
+            ),
+          
+          const Spacer(),
+          
+          // Center play/pause button
+          Center(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.5),
+                shape: BoxShape.circle,
               ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 80,
-            child: Text(
-              label,
-              style: const TextStyle(
-                color: Colors.grey,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
+              child: IconButton(
+                iconSize: 60,
+                icon: Icon(
+                  isPlaying ? Icons.pause : Icons.play_arrow,
+                  color: Colors.white,
+                ),
+                onPressed: () {
+                  setState(() {
+                    if (isPlaying) {
+                      _videoController!.pause();
+                    } else {
+                      _videoController!.play();
+                      _startControlsTimer();
+                    }
+                  });
+                },
               ),
             ),
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-              ),
+          
+          const Spacer(),
+          
+          // Bottom controls
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                // Progress bar
+                VideoProgressIndicator(
+                  _videoController!,
+                  allowScrubbing: true,
+                  colors: const VideoProgressColors(
+                    playedColor: Colors.white,
+                    bufferedColor: Colors.grey,
+                    backgroundColor: Colors.grey,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                
+                // Time and controls row
+                Row(
+                  children: [
+                    Text(
+                      _formatDuration(position),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: Icon(
+                        _isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                        color: Colors.white,
+                      ),
+                      onPressed: _toggleFullScreen,
+                    ),
+                    Text(
+                      _formatDuration(duration),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ],
@@ -385,13 +272,36 @@ class _FullScreenPhotoState extends State<FullScreenPhoto> {
     );
   }
 
-  String _formatDate(DateTime date) {
-    return '${date.day}/${date.month}/${date.year} at ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+  String _formatDuration(Duration duration) {
+    final minutes = duration.inMinutes;
+    final seconds = duration.inSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  void _showDeleteDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Delete ${widget.media.isVideo ? 'Video' : 'Photo'}'),
+          content: Text('Are you sure you want to delete this ${widget.media.isVideo ? 'video' : 'photo'}?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context); // Close dialog
+                Navigator.pop(context); // Close full screen
+                widget.onDelete();
+              },
+              child: const Text('Delete'),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+            ),
+          ],
+        );
+      },
+    );
   }
 }

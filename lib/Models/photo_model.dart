@@ -9,36 +9,41 @@ class PhotoModel extends HiveObject {
   String id;
 
   @HiveField(1)
-  String name;
+  String path;
 
   @HiveField(2)
-  Uint8List imageData;
+  String name;
 
   @HiveField(3)
   DateTime dateAdded;
 
   @HiveField(4)
-  String originalPath;
+  int size;
+
+  @HiveField(5)
+  String type; // 'image' or 'video'
+
+  @HiveField(6)
+  int? duration; // Duration in seconds for videos
+
+  @HiveField(7)
+  String? thumbnailPath; // Thumbnail path for videos
+
+  @HiveField(8)
+  Uint8List imageData; // Keep existing imageData for compatibility
 
   PhotoModel({
     required this.id,
+    required this.path,
     required this.name,
-    required this.imageData,
     required this.dateAdded,
-    required this.originalPath,
+    required this.size,
+    required this.imageData,
+    this.type = 'image',
+    this.duration,
+    this.thumbnailPath,
   });
 
-  factory PhotoModel.create({
-    required String name,
-    required Uint8List imageData,
-    required String originalPath,
-  }) {
-    return PhotoModel(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: name,
-      imageData: imageData,
-      dateAdded: DateTime.now(),
-      originalPath: originalPath,
-    );
-  }
+  bool get isVideo => type == 'video';
+  bool get isImage => type == 'image';
 }

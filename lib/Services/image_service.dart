@@ -1,142 +1,144 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 import '../models/photo_model.dart';
-import 'hive_service.dart';
 
 class ImageService {
   static final ImagePicker _picker = ImagePicker();
 
-  static Future<bool> requestPermissions() async {
-    Map<Permission, PermissionStatus> permissions = await [
-      Permission.photos,
-      Permission.camera,
-      Permission.storage,
-    ].request();
-
-    return permissions.values.every((status) =>
-        status == PermissionStatus.granted ||
-        status == PermissionStatus.limited);
-  }
-
-  static Future<PhotoModel?> pickImageFromGallery() async {
+  static Future<List<PhotoModel>> pickMedia() async {
     try {
-      final XFile? image = await _picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 100,
-      );
-
-      if (image != null) {
-        return await _createPhotoModel(image);
-      }
-    } catch (e) {
-      print('Error picking image from gallery: $e');
-    }
-    return null;
-  }
-
-  static Future<List<PhotoModel>> pickMultipleImagesFromGallery() async {
-    List<PhotoModel> photos = [];
-    try {
-      final List<XFile> images = await _picker.pickMultiImage(
-        imageQuality: 100,
-        maxWidth: 1920,
-        maxHeight: 1080,
-      );
-
-      if (images.isNotEmpty) {
-        for (XFile image in images) {
-          try {
-            PhotoModel photoModel = await _createPhotoModel(image);
-            photos.add(photoModel);
-          } catch (e) {
-            print('Error processing image ${image.name}: $e');
-            // Continue processing other images even if one fails
-          }
-        }
-      }
-    } catch (e) {
-      print('Error picking multiple images from gallery: $e');
-    }
-    return photos;
-  }
-
-  static Future<PhotoModel?> pickImageFromCamera() async {
-    try {
-      final XFile? image = await _picker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 100,
-      );
-
-      if (image != null) {
-        return await _createPhotoModel(image);
-      }
-    } catch (e) {
-      print('Error taking photo from camera: $e');
-    }
-    return null;
-  }
-
-  static Future<PhotoModel> _createPhotoModel(XFile image) async {
-    final File imageFile = File(image.path);
-    final Uint8List imageBytes = await imageFile.readAsBytes();
-    final String fileName = image.name.isEmpty
-        ? 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg'
-        : image.name;
-
-    return PhotoModel.create(
-      name: fileName,
-      imageData: imageBytes,
-      originalPath: image.path,
-    );
-  }
-
-  static Future<void> savePhotoToVault(PhotoModel photo) async {
-    await HiveService.addPhoto(photo);
-  }
-
-  static Future<bool> saveMultiplePhotosToVault(List<PhotoModel> photos) async {
-    if (photos.isEmpty) return false;
-    
-    try {
-      int successCount = 0;
-      int totalCount = photos.length;
+      // Pick multiple images and videos
+      final List<XFile> files = await _picker.pickMultipleMedia();
       
-      for (PhotoModel photo in photos) {
-        try {
-          await HiveService.addPhoto(photo);
-          successCount++;
-        } catch (e) {
-          print('Error saving photo ${photo.name}: $e');
-          // Continue with other photos even if one fails
+      if (files.isEmpty) return [];
+
+      List<PhotoModel> mediaList = [];
+      
+      for (XFile file in files) {
+        final photoModel = await _processMediaFile(file);
+        if (photoModel != null) {
+          mediaList.add(photoModel);
         }
       }
       
-      // Return true if at least some photos were saved successfully
-      // You might want to adjust this logic based on your requirements
-      return successCount > 0;
-      
+      return mediaList;
     } catch (e) {
-      print('Error saving multiple photos: $e');
-      return false;
+      print('Error picking media: $e');
+      return [];
     }
   }
 
-  // Utility method to get image file size
-  static Future<int> getImageFileSize(String path) async {
+  static Future<PhotoModel?> _processMediaFile(XFile file) async {
     try {
-      final File file = File(path);
-      return await file.length();
+      final String fileName = path.basename(file.path);
+      final String fileExtension = path.extension(file.path).toLowerCase();
+      final File originalFile = File(file.path);
+      final int fileSize = await originalFile.length();
+      
+      // Determine if it's a video or image
+      final bool isVideo = _isVideoFile(fileExtension);
+      
+      // Get app directory
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final String mediaDir = path.join(appDir.path, 'media');
+      await Directory(mediaDir).create(recursive: true);
+      
+      // Copy file to app directory
+      final String newPath = path.join(mediaDir, '${DateTime.now().millisecondsSinceEpoch}_$fileName');
+      final File newFile = await originalFile.copy(newPath);
+      
+      String? thumbnailPath;
+      int? duration;
+      
+      if (isVideo) {
+        // Generate thumbnail for video
+        thumbnailPath = await _generateVideoThumbnail(newPath);
+        duration = await _getVideoDuration(newPath);
+      }
+      
+      return PhotoModel(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        path: newFile.path,
+        name: fileName,
+        dateAdded: DateTime.now(),
+        size: fileSize,
+        type: isVideo ? 'video' : 'image',
+        duration: duration,
+        thumbnailPath: thumbnailPath,
+      );
     } catch (e) {
-      print('Error getting file size: $e');
-      return 0;
+      print('Error processing media file: $e');
+      return null;
     }
   }
 
-  // Utility method to validate image format
-  static bool isValidImageFormat(String fileName) {
-    final String extension = fileName.toLowerCase().split('.').last;
-    return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].contains(extension);
+  static bool _isVideoFile(String extension) {
+    const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp', '.m4v'];
+    return videoExtensions.contains(extension);
+  }
+
+  static Future<String?> _generateVideoThumbnail(String videoPath) async {
+    try {
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final String thumbnailDir = path.join(appDir.path, 'thumbnails');
+      await Directory(thumbnailDir).create(recursive: true);
+      
+      final String thumbnailPath = path.join(
+        thumbnailDir, 
+        '${path.basenameWithoutExtension(videoPath)}_thumb.jpg'
+      );
+
+      final Uint8List? thumbnailData = await VideoThumbnail.thumbnailData(
+        video: videoPath,
+        imageFormat: ImageFormat.JPEG,
+        maxHeight: 300,
+        quality: 75,
+      );
+
+      if (thumbnailData != null) {
+        final File thumbnailFile = File(thumbnailPath);
+        await thumbnailFile.writeAsBytes(thumbnailData);
+        return thumbnailPath;
+      }
+      return null;
+    } catch (e) {
+      print('Error generating video thumbnail: $e');
+      return null;
+    }
+  }
+
+  static Future<int?> _getVideoDuration(String videoPath) async {
+    try {
+      // You might need to use video_player or ffmpeg to get actual duration
+      // For now, returning null as placeholder
+      return null;
+    } catch (e) {
+      print('Error getting video duration: $e');
+      return null;
+    }
+  }
+
+  static Future<void> deleteMedia(PhotoModel media) async {
+    try {
+      // Delete main file
+      final File file = File(media.path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+      
+      // Delete thumbnail if it's a video
+      if (media.isVideo && media.thumbnailPath != null) {
+        final File thumbnailFile = File(media.thumbnailPath!);
+        if (await thumbnailFile.exists()) {
+          await thumbnailFile.delete();
+        }
+      }
+    } catch (e) {
+      print('Error deleting media: $e');
+    }
   }
 }

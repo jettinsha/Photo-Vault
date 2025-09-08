@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/photo_model.dart';
 import '../services/hive_service.dart';
+import '../services/image_service.dart';
 import '../widgets/photo_grid_item.dart';
 import 'full_screen_photo.dart';
 import 'add_photo_screen.dart' hide PhotoModel;
@@ -58,11 +59,22 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => FullScreenPhoto(
-          photos: photos,
-          initialIndex: index,
+          media: photos[index],
+          onDelete: () {
+            _deletePhoto(photos[index]);
+          },
         ),
       ),
     );
+  }
+
+  Future<void> _deletePhoto(PhotoModel photo) async {
+    try {
+      await ImageService.deleteMedia(photo);
+      _loadPhotos(); // Refresh the list
+    } catch (e) {
+      print('Error deleting photo: $e');
+    }
   }
 
   Future<bool> _onWillPop() async {

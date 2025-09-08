@@ -18,27 +18,39 @@ class PhotoModelAdapter extends TypeAdapter<PhotoModel> {
     };
     return PhotoModel(
       id: fields[0] as String,
-      name: fields[1] as String,
-      imageData: fields[2] as Uint8List,
+      path: fields[1] as String,
+      name: fields[2] as String,
       dateAdded: fields[3] as DateTime,
-      originalPath: fields[4] as String,
+      size: fields[4] as int,
+      imageData: fields[8] as Uint8List,
+      type: fields[5] as String? ?? 'image',
+      duration: fields[6] as int?,
+      thumbnailPath: fields[7] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, PhotoModel obj) {
     writer
-      ..writeByte(5)
+      ..writeByte(9)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
-      ..write(obj.name)
+      ..write(obj.path)
       ..writeByte(2)
-      ..write(obj.imageData)
+      ..write(obj.name)
       ..writeByte(3)
       ..write(obj.dateAdded)
       ..writeByte(4)
-      ..write(obj.originalPath);
+      ..write(obj.size)
+      ..writeByte(5)
+      ..write(obj.type)
+      ..writeByte(6)
+      ..write(obj.duration)
+      ..writeByte(7)
+      ..write(obj.thumbnailPath)
+      ..writeByte(8)
+      ..write(obj.imageData);
   }
 
   @override
