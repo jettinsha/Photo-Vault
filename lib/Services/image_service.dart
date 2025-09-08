@@ -1,198 +1,142 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as path;
+import 'package:permission_handler/permission_handler.dart';
 import '../models/photo_model.dart';
-import '../services/hive_service.dart';
+import 'hive_service.dart';
 
 class ImageService {
   static final ImagePicker _picker = ImagePicker();
-  static String? _appDocumentsPath;
 
-  // Initialize the service
-  static Future<void> init() async {
-    final directory = await getApplicationDocumentsDirectory();
-    _appDocumentsPath = directory.path;
+  static Future<bool> requestPermissions() async {
+    Map<Permission, PermissionStatus> permissions = await [
+      Permission.photos,
+      Permission.camera,
+      Permission.storage,
+    ].request();
+
+    return permissions.values.every((status) =>
+        status == PermissionStatus.granted ||
+        status == PermissionStatus.limited);
   }
 
-  // Pick multiple images from gallery
-  static Future<List<PhotoModel>> pickMultipleImages() async {
+  static Future<PhotoModel?> pickImageFromGallery() async {
     try {
-      final List<XFile> images = await _picker.pickMultiImage();
-
-      if (images.isEmpty) return [];
-
-      List<PhotoModel> photoModels = [];
-
-      for (XFile image in images) {
-        final PhotoModel? photoModel = await _processImage(image);
-        if (photoModel != null) {
-          photoModels.add(photoModel);
-        }
-      }
-
-      return photoModels;
-    } catch (e) {
-      debugPrint('Error picking images: $e');
-      return [];
-    }
-  }
-
-  // Pick single image from gallery
-  static Future<PhotoModel?> pickSingleImage() async {
-    try {
-      final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-
-      if (image == null) return null;
-
-      return await _processImage(image);
-    } catch (e) {
-      debugPrint('Error picking single image: $e');
-      return null;
-    }
-  }
-
-  // Process and save image locally
-  static Future<PhotoModel?> _processImage(XFile image) async {
-    try {
-      if (_appDocumentsPath == null) {
-        await init();
-      }
-
-      // Read the image file
-      final Uint8List imageBytes = await image.readAsBytes();
-      final File originalFile = File(image.path);
-
-      // Generate unique ID and filename
-      final String uniqueId = DateTime.now().millisecondsSinceEpoch.toString();
-      final String originalName = path.basename(image.path);
-      final String extension = path.extension(originalName);
-      final String newFileName = '${uniqueId}_$originalName';
-
-      // Create photos directory if it doesn't exist
-      final String photosDir = path.join(_appDocumentsPath!, 'photos');
-      final Directory photosDirObj = Directory(photosDir);
-      if (!await photosDirObj.exists()) {
-        await photosDirObj.create(recursive: true);
-      }
-
-      // Save image to app documents directory
-      final String localPath = path.join(photosDir, newFileName);
-      final File localFile = File(localPath);
-      await localFile.writeAsBytes(imageBytes);
-
-      // Create PhotoModel
-      final PhotoModel photoModel = PhotoModel(
-        id: uniqueId,
-        fileName: newFileName,
-        localPath: localPath,
-        addedDate: DateTime.now(),
-        fileSize: imageBytes.length,
-        originalPath: image.path,
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 100,
       );
 
-      return photoModel;
-    } catch (e) {
-      debugPrint('Error processing image: $e');
-      return null;
-    }
-  }
-
-  // Delete image file from local storage
-  static Future<bool> deleteImageFile(String localPath) async {
-    try {
-      final File file = File(localPath);
-      if (await file.exists()) {
-        await file.delete();
-        return true;
+      if (image != null) {
+        return await _createPhotoModel(image);
       }
-      return false;
     } catch (e) {
-      debugPrint('Error deleting image file: $e');
-      return false;
+      print('Error picking image from gallery: $e');
     }
+    return null;
   }
 
-  // Check if image file exists
-  static Future<bool> imageFileExists(String localPath) async {
+  static Future<List<PhotoModel>> pickMultipleImagesFromGallery() async {
+    List<PhotoModel> photos = [];
     try {
-      final File file = File(localPath);
-      return await file.exists();
-    } catch (e) {
-      debugPrint('Error checking image file existence: $e');
-      return false;
-    }
-  }
+      final List<XFile> images = await _picker.pickMultiImage(
+        imageQuality: 100,
+        maxWidth: 1920,
+        maxHeight: 1080,
+      );
 
-  // Get image file size
-  static Future<int> getImageFileSize(String localPath) async {
-    try {
-      final File file = File(localPath);
-      if (await file.exists()) {
-        return await file.length();
-      }
-      return 0;
-    } catch (e) {
-      debugPrint('Error getting image file size: $e');
-      return 0;
-    }
-  }
-
-  // Clean up orphaned files (files that exist locally but not in database)
-  static Future<void> cleanupOrphanedFiles() async {
-    try {
-      if (_appDocumentsPath == null) {
-        await init();
-      }
-
-      final String photosDir = path.join(_appDocumentsPath!, 'photos');
-      final Directory photosDirObj = Directory(photosDir);
-
-      if (!await photosDirObj.exists()) return;
-
-      final List<FileSystemEntity> files = await photosDirObj.list().toList();
-      final List<PhotoModel> dbPhotos = HiveService.getAllPhotos();
-      final Set<String> dbFilePaths =
-          dbPhotos.map((photo) => photo.localPath).toSet();
-
-      for (FileSystemEntity file in files) {
-        if (file is File && !dbFilePaths.contains(file.path)) {
-          await file.delete();
-          debugPrint('Deleted orphaned file: ${file.path}');
+      if (images.isNotEmpty) {
+        for (XFile image in images) {
+          try {
+            PhotoModel photoModel = await _createPhotoModel(image);
+            photos.add(photoModel);
+          } catch (e) {
+            print('Error processing image ${image.name}: $e');
+            // Continue processing other images even if one fails
+          }
         }
       }
     } catch (e) {
-      debugPrint('Error cleaning up orphaned files: $e');
+      print('Error picking multiple images from gallery: $e');
+    }
+    return photos;
+  }
+
+  static Future<PhotoModel?> pickImageFromCamera() async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 100,
+      );
+
+      if (image != null) {
+        return await _createPhotoModel(image);
+      }
+    } catch (e) {
+      print('Error taking photo from camera: $e');
+    }
+    return null;
+  }
+
+  static Future<PhotoModel> _createPhotoModel(XFile image) async {
+    final File imageFile = File(image.path);
+    final Uint8List imageBytes = await imageFile.readAsBytes();
+    final String fileName = image.name.isEmpty
+        ? 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg'
+        : image.name;
+
+    return PhotoModel.create(
+      name: fileName,
+      imageData: imageBytes,
+      originalPath: image.path,
+    );
+  }
+
+  static Future<void> savePhotoToVault(PhotoModel photo) async {
+    await HiveService.addPhoto(photo);
+  }
+
+  static Future<bool> saveMultiplePhotosToVault(List<PhotoModel> photos) async {
+    if (photos.isEmpty) return false;
+    
+    try {
+      int successCount = 0;
+      int totalCount = photos.length;
+      
+      for (PhotoModel photo in photos) {
+        try {
+          await HiveService.addPhoto(photo);
+          successCount++;
+        } catch (e) {
+          print('Error saving photo ${photo.name}: $e');
+          // Continue with other photos even if one fails
+        }
+      }
+      
+      // Return true if at least some photos were saved successfully
+      // You might want to adjust this logic based on your requirements
+      return successCount > 0;
+      
+    } catch (e) {
+      print('Error saving multiple photos: $e');
+      return false;
     }
   }
 
-  // Get photos directory size
-  static Future<int> getPhotosDirectorySize() async {
+  // Utility method to get image file size
+  static Future<int> getImageFileSize(String path) async {
     try {
-      if (_appDocumentsPath == null) {
-        await init();
-      }
-
-      final String photosDir = path.join(_appDocumentsPath!, 'photos');
-      final Directory photosDirObj = Directory(photosDir);
-
-      if (!await photosDirObj.exists()) return 0;
-
-      int totalSize = 0;
-      final List<FileSystemEntity> files = await photosDirObj.list().toList();
-
-      for (FileSystemEntity file in files) {
-        if (file is File) {
-          totalSize += await file.length();
-        }
-      }
-
-      return totalSize;
+      final File file = File(path);
+      return await file.length();
     } catch (e) {
-      debugPrint('Error getting photos directory size: $e');
+      print('Error getting file size: $e');
       return 0;
     }
+  }
+
+  // Utility method to validate image format
+  static bool isValidImageFormat(String fileName) {
+    final String extension = fileName.toLowerCase().split('.').last;
+    return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].contains(extension);
   }
 }

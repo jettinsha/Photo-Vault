@@ -1,513 +1,579 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../models/photo_model.dart';
-import '../services/hive_service.dart';
 import '../services/image_service.dart';
+import '../models/photo_model.dart';
 
 class AddPhotoScreen extends StatefulWidget {
-  const AddPhotoScreen({super.key});
+  const AddPhotoScreen({Key? key}) : super(key: key);
 
   @override
   State<AddPhotoScreen> createState() => _AddPhotoScreenState();
 }
 
-class _AddPhotoScreenState extends State<AddPhotoScreen>
-    with TickerProviderStateMixin {
-  List<PhotoModel> _selectedPhotos = [];
-  bool _isLoading = false;
-  bool _isSaving = false;
-  late AnimationController _slideController;
-  late AnimationController _fadeController;
-  late Animation<Offset> _slideAnimation;
-  late Animation<double> _fadeAnimation;
+class _AddPhotoScreenState extends State<AddPhotoScreen> {
+  bool isLoading = false;
+  String loadingMessage = '';
 
   @override
   void initState() {
     super.initState();
-    _initializeAnimations();
-    _pickPhotos();
+    _requestPermissions();
   }
 
-  void _initializeAnimations() {
-    _slideController = AnimationController(
-      duration: const Duration(milliseconds: 600),
-      vsync: this,
-    );
-    _fadeController = AnimationController(
-      duration: const Duration(milliseconds: 400),
-      vsync: this,
-    );
-
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0.0, 0.3),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _slideController,
-      curve: Curves.easeOutCubic,
-    ));
-
-    _fadeAnimation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(
-      parent: _fadeController,
-      curve: Curves.easeInOut,
-    ));
-
-    _slideController.forward();
-    _fadeController.forward();
+  Future<void> _requestPermissions() async {
+    await ImageService.requestPermissions();
   }
 
-  Future<void> _pickPhotos() async {
-    setState(() => _isLoading = true);
+  Future<void> _pickSingleFromGallery() async {
+    setState(() {
+      isLoading = true;
+      loadingMessage = 'Adding photo to vault...';
+    });
 
     try {
-      final photos = await ImageService.pickMultipleImages();
-
-      if (photos.isEmpty) {
-        if (mounted) {
-          Navigator.pop(context, false);
-        }
-        return;
-      }
-
-      setState(() {
-        _selectedPhotos = photos;
-      });
-    } catch (e) {
-      _showSnackBar('Error selecting photos: $e', isError: true);
-      if (mounted) {
-        Navigator.pop(context, false);
-      }
-    } finally {
-      setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _savePhotos() async {
-    if (_selectedPhotos.isEmpty || _isSaving) return;
-
-    setState(() => _isSaving = true);
-
-    try {
-      // Add haptic feedback
-      HapticFeedback.mediumImpact();
-
-      await HiveService.addPhotos(_selectedPhotos);
-
-      if (mounted) {
+      final PhotoModel? photo = await ImageService.pickImageFromGallery();
+      if (photo != null) {
+        await ImageService.savePhotoToVault(photo);
+        _showSuccessMessage('Photo added to vault successfully!');
         Navigator.pop(context, true);
       }
     } catch (e) {
-      _showSnackBar('Error saving photos: $e', isError: true);
+      _showErrorMessage('Failed to add photo from gallery');
     } finally {
-      setState(() => _isSaving = false);
+      setState(() {
+        isLoading = false;
+      });
     }
   }
 
-  void _removePhoto(int index) {
+  Future<void> _pickMultipleFromGallery() async {
     setState(() {
-      _selectedPhotos.removeAt(index);
+      isLoading = true;
+      loadingMessage = 'Selecting photos...';
     });
 
-    if (_selectedPhotos.isEmpty) {
-      Navigator.pop(context, false);
+    try {
+      final List<PhotoModel>? photos =
+          await ImageService.pickMultipleImagesFromGallery();
+      if (photos != null && photos.isNotEmpty) {
+        setState(() {
+          loadingMessage = 'Adding ${photos.length} photos to vault...';
+        });
+
+        int successCount = 0;
+        for (int i = 0; i < photos.length; i++) {
+          try {
+            await ImageService.savePhotoToVault(photos[i]);
+            successCount++;
+            setState(() {
+              loadingMessage =
+                  'Added $successCount of ${photos.length} photos...';
+            });
+          } catch (e) {
+            // Continue with other photos even if one fails
+            print('Failed to save photo ${i + 1}: $e');
+          }
+        }
+
+        if (successCount == photos.length) {
+          _showSuccessMessage(
+              'All $successCount photos added to vault successfully!');
+        } else if (successCount > 0) {
+          _showSuccessMessage(
+              '$successCount of ${photos.length} photos added successfully!');
+        } else {
+          _showErrorMessage('Failed to add any photos to vault');
+        }
+
+        if (successCount > 0) {
+          Navigator.pop(context, true);
+        }
+      }
+    } catch (e) {
+      _showErrorMessage('Failed to select photos from gallery');
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
     }
   }
 
-  void _showSnackBar(String message, {bool isError = false}) {
-    if (!mounted) return;
+  Future<void> _pickFromCamera() async {
+    setState(() {
+      isLoading = true;
+      loadingMessage = 'Taking photo...';
+    });
+
+    try {
+      final PhotoModel? photo = await ImageService.pickImageFromCamera();
+      if (photo != null) {
+        setState(() {
+          loadingMessage = 'Adding photo to vault...';
+        });
+        await ImageService.savePhotoToVault(photo);
+        _showSuccessMessage('Photo added to vault successfully!');
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      _showErrorMessage('Failed to take photo');
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  void _showSuccessMessage(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isError ? Colors.red : Colors.green,
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: isError ? 4 : 2),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 3),
       ),
     );
   }
 
-  @override
-  void dispose() {
-    _slideController.dispose();
-    _fadeController.dispose();
-    super.dispose();
+  void _showErrorMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: _buildAppBar(),
-      body: _buildBody(),
-      bottomNavigationBar: _buildBottomBar(),
-    );
-  }
-
-  PreferredSizeWidget _buildAppBar() {
-    return AppBar(
-      title: Text(
-        'Add Photos',
-        style: TextStyle(
-          fontWeight: FontWeight.w600,
-          color: Theme.of(context).colorScheme.onSurface,
-        ),
-      ),
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () => Navigator.pop(context, false),
-      ),
-      flexibleSpace: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Theme.of(context).colorScheme.primary.withOpacity(0.1),
-              Theme.of(context).colorScheme.secondary.withOpacity(0.05),
-            ],
+      backgroundColor: const Color(0xFF1A1A1A),
+      appBar: AppBar(
+        title: const Text(
+          'Add Photo',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
           ),
         ),
-      ),
-      actions: [
-        if (_selectedPhotos.isNotEmpty && !_isSaving)
-          TextButton(
-            onPressed: _savePhotos,
-            child: Text(
-              'Save (${_selectedPhotos.length})',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildBody() {
-    if (_isLoading) {
-      return _buildLoadingState();
-    }
-
-    if (_selectedPhotos.isEmpty) {
-      return _buildEmptyState();
-    }
-
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Theme.of(context).colorScheme.background,
-            Theme.of(context).colorScheme.background.withOpacity(0.8),
-          ],
+        backgroundColor: const Color(0xFF2D2D2D),
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: isLoading ? null : () => Navigator.pop(context),
         ),
       ),
-      child: SafeArea(
-        child: FadeTransition(
-          opacity: _fadeAnimation,
-          child: SlideTransition(
-            position: _slideAnimation,
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
+      body: isLoading
+          ? Center(
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  _buildHeader(),
+                  const CircularProgressIndicator(
+                    valueColor:
+                        AlwaysStoppedAnimation<Color>(Color(0xFF6366F1)),
+                  ),
                   const SizedBox(height: 16),
-                  Expanded(child: _buildPhotoGrid()),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      loadingMessage,
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : _buildContent(),
+    );
+  }
+
+  Widget _buildContent() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenWidth = constraints.maxWidth;
+        final screenHeight = constraints.maxHeight;
+        final isTablet = screenWidth > 600;
+        final isLandscape = screenWidth > screenHeight;
+
+        // Responsive padding
+        final horizontalPadding = isTablet ? screenWidth * 0.1 : 24.0;
+        final verticalPadding = isLandscape ? 16.0 : 24.0;
+
+        // Responsive spacing
+        final topSpacing = isLandscape ? 16.0 : 32.0;
+        final sectionSpacing = isLandscape ? 24.0 : 48.0;
+        final cardSpacing = isLandscape ? 12.0 : 16.0;
+
+        // Responsive icon and text sizes
+        final iconSize = isTablet ? 100.0 : (isLandscape ? 60.0 : 80.0);
+        final titleSize = isTablet ? 28.0 : (isLandscape ? 20.0 : 24.0);
+        final subtitleSize = isTablet ? 18.0 : (isLandscape ? 14.0 : 16.0);
+
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: screenHeight,
+            ),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: horizontalPadding,
+                vertical: verticalPadding,
+              ),
+              child: Column(
+                mainAxisAlignment: isLandscape 
+                    ? MainAxisAlignment.start 
+                    : MainAxisAlignment.center,
+                children: [
+                  if (isLandscape) SizedBox(height: topSpacing),
+                  
+                  // Main icon container
+                  Container(
+                    padding: EdgeInsets.all(isTablet ? 40 : (isLandscape ? 24 : 32)),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2D2D2D),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 20,
+                          offset: const Offset(0, 10),
+                        ),
+                      ],
+                    ),
+                    child: Icon(
+                      Icons.add_photo_alternate_outlined,
+                      size: iconSize,
+                      color: const Color(0xFF6366F1),
+                    ),
+                  ),
+                  
+                  SizedBox(height: topSpacing),
+                  
+                  // Title
+                  Text(
+                    'Choose Photo Source',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: titleSize,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  
+                  const SizedBox(height: 12),
+                  
+                  // Subtitle
+                  Text(
+                    'Select how you want to add photos to your vault',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: subtitleSize,
+                    ),
+                  ),
+                  
+                  SizedBox(height: sectionSpacing),
+                  
+                  // Options - responsive layout
+                  if (isTablet && !isLandscape)
+                    _buildTabletOptions(cardSpacing)
+                  else if (isLandscape && screenWidth > 800)
+                    _buildLandscapeOptions(cardSpacing)
+                  else
+                    _buildMobileOptions(cardSpacing),
+                  
+                  if (isLandscape) const SizedBox(height: 24),
                 ],
               ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLoadingState() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Theme.of(context).colorScheme.primary.withOpacity(0.1),
-            Theme.of(context).colorScheme.background,
-          ],
-        ),
-      ),
-      child: const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text(
-              'Loading photos...',
-              style: TextStyle(fontSize: 16),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Theme.of(context).colorScheme.primary.withOpacity(0.05),
-            Theme.of(context).colorScheme.background,
-          ],
-        ),
-      ),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.photo_library_outlined,
-              size: 80,
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No Photos Selected',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withOpacity(0.6),
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Please select photos to continue',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withOpacity(0.4),
-                  ),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _pickPhotos,
-              icon: const Icon(Icons.photo_library),
-              label: const Text('Select Photos'),
-              style: ElevatedButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader() {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Row(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                Icons.photo_library,
-                color: Theme.of(context).colorScheme.primary,
-                size: 24,
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Selected Photos',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                  ),
-                  Text(
-                    '${_selectedPhotos.length} photo${_selectedPhotos.length != 1 ? 's' : ''} ready to save',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withOpacity(0.6),
-                        ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPhotoGrid() {
-    return GridView.builder(
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
-        childAspectRatio: 1.0,
-      ),
-      itemCount: _selectedPhotos.length,
-      itemBuilder: (context, index) {
-        final photo = _selectedPhotos[index];
-        return _buildPhotoCard(photo, index);
+        );
       },
     );
   }
 
-  Widget _buildPhotoCard(PhotoModel photo, int index) {
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Image.file(
-            File(photo.localPath),
-            fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) {
-              return Container(
-                color: Colors.grey[200],
-                child: const Icon(
-                  Icons.broken_image,
-                  color: Colors.grey,
-                  size: 48,
-                ),
-              );
-            },
+  // Mobile layout - vertical stack
+  Widget _buildMobileOptions(double spacing) {
+    return Column(
+      children: [
+        _buildOptionCard(
+          icon: Icons.photo_library_outlined,
+          title: 'Single Photo',
+          subtitle: 'Choose one photo from gallery',
+          onTap: _pickSingleFromGallery,
+          gradient: const LinearGradient(
+            colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
           ),
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.black.withOpacity(0.3),
-                ],
-              ),
-            ),
+        ),
+        SizedBox(height: spacing),
+        _buildOptionCard(
+          icon: Icons.photo_library,
+          title: 'Multiple Photos',
+          subtitle: 'Choose multiple photos from gallery',
+          onTap: _pickMultipleFromGallery,
+          gradient: const LinearGradient(
+            colors: [Color(0xFF3B82F6), Color(0xFF1E40AF)],
           ),
-          Positioned(
-            top: 8,
-            right: 8,
-            child: GestureDetector(
-              onTap: () => _removePhoto(index),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Icon(
-                  Icons.close,
-                  color: Colors.white,
-                  size: 20,
-                ),
-              ),
-            ),
+        ),
+        SizedBox(height: spacing),
+        _buildOptionCard(
+          icon: Icons.camera_alt_outlined,
+          title: 'Camera',
+          subtitle: 'Take a new photo',
+          onTap: _pickFromCamera,
+          gradient: const LinearGradient(
+            colors: [Color(0xFF10B981), Color(0xFF059669)],
           ),
-          Positioned(
-            bottom: 8,
-            left: 8,
-            right: 8,
-            child: Text(
-              photo.fileName,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  Widget _buildBottomBar() {
-    if (_selectedPhotos.isEmpty || _isLoading) return const SizedBox.shrink();
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 8,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        child: Row(
+  // Tablet layout - 2 column grid
+  Widget _buildTabletOptions(double spacing) {
+    return Column(
+      children: [
+        Row(
           children: [
             Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _isSaving ? null : _savePhotos,
-                icon: _isSaving
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save),
-                label: Text(_isSaving ? 'Saving...' : 'Save All Photos'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+              child: _buildOptionCard(
+                icon: Icons.photo_library_outlined,
+                title: 'Single Photo',
+                subtitle: 'Choose one photo from gallery',
+                onTap: _pickSingleFromGallery,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
                 ),
               ),
             ),
-            const SizedBox(width: 12),
-            OutlinedButton(
-              onPressed: _isSaving ? null : _pickPhotos,
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.all(16),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+            SizedBox(width: spacing),
+            Expanded(
+              child: _buildOptionCard(
+                icon: Icons.photo_library,
+                title: 'Multiple Photos',
+                subtitle: 'Choose multiple photos from gallery',
+                onTap: _pickMultipleFromGallery,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF3B82F6), Color(0xFF1E40AF)],
                 ),
               ),
-              child: const Icon(Icons.add_photo_alternate),
             ),
           ],
         ),
-      ),
+        SizedBox(height: spacing),
+        Row(
+          children: [
+            Expanded(
+              child: _buildOptionCard(
+                icon: Icons.camera_alt_outlined,
+                title: 'Camera',
+                subtitle: 'Take a new photo',
+                onTap: _pickFromCamera,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF10B981), Color(0xFF059669)],
+                ),
+              ),
+            ),
+            const Expanded(child: SizedBox()), // Empty space for balance
+          ],
+        ),
+      ],
+    );
+  }
+
+  // Landscape layout - horizontal row
+  Widget _buildLandscapeOptions(double spacing) {
+    return Row(
+      children: [
+        Expanded(
+          child: _buildOptionCard(
+            icon: Icons.photo_library_outlined,
+            title: 'Single Photo',
+            subtitle: 'Choose one photo from gallery',
+            onTap: _pickSingleFromGallery,
+            gradient: const LinearGradient(
+              colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+            ),
+          ),
+        ),
+        SizedBox(width: spacing),
+        Expanded(
+          child: _buildOptionCard(
+            icon: Icons.photo_library,
+            title: 'Multiple Photos',
+            subtitle: 'Choose multiple photos from gallery',
+            onTap: _pickMultipleFromGallery,
+            gradient: const LinearGradient(
+              colors: [Color(0xFF3B82F6), Color(0xFF1E40AF)],
+            ),
+          ),
+        ),
+        SizedBox(width: spacing),
+        Expanded(
+          child: _buildOptionCard(
+            icon: Icons.camera_alt_outlined,
+            title: 'Camera',
+            subtitle: 'Take a new photo',
+            onTap: _pickFromCamera,
+            gradient: const LinearGradient(
+              colors: [Color(0xFF10B981), Color(0xFF059669)],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOptionCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    required Gradient gradient,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenWidth = MediaQuery.of(context).size.width;
+        final isTablet = screenWidth > 600;
+        final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+        
+        // Responsive sizes
+        final iconSize = isTablet ? 36.0 : (isLandscape ? 28.0 : 32.0);
+        final titleSize = isTablet ? 22.0 : (isLandscape ? 16.0 : 20.0);
+        final subtitleSize = isTablet ? 16.0 : (isLandscape ? 12.0 : 14.0);
+        final padding = isTablet ? 24.0 : (isLandscape ? 16.0 : 20.0);
+        final borderRadius = isTablet ? 20.0 : 16.0;
+
+        return GestureDetector(
+          onTap: onTap,
+          child: Container(
+            width: double.infinity,
+            padding: EdgeInsets.all(padding),
+            decoration: BoxDecoration(
+              gradient: gradient,
+              borderRadius: BorderRadius.circular(borderRadius),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.2),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: isLandscape && screenWidth > 800
+                ? _buildLandscapeCardContent(icon, title, subtitle, iconSize, titleSize, subtitleSize)
+                : _buildPortraitCardContent(icon, title, subtitle, iconSize, titleSize, subtitleSize),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPortraitCardContent(
+    IconData icon, 
+    String title, 
+    String subtitle, 
+    double iconSize, 
+    double titleSize, 
+    double subtitleSize
+  ) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(
+            icon,
+            size: iconSize,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: titleSize,
+                  fontWeight: FontWeight.bold,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.8),
+                  fontSize: subtitleSize,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+        const Icon(
+          Icons.arrow_forward_ios,
+          color: Colors.white,
+          size: 20,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLandscapeCardContent(
+    IconData icon, 
+    String title, 
+    String subtitle, 
+    double iconSize, 
+    double titleSize, 
+    double subtitleSize
+  ) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(
+            icon,
+            size: iconSize,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          title,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: titleSize,
+            fontWeight: FontWeight.bold,
+          ),
+          textAlign: TextAlign.center,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          subtitle,
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.8),
+            fontSize: subtitleSize,
+          ),
+          textAlign: TextAlign.center,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
     );
   }
 }

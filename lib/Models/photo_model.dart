@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:hive/hive.dart';
 
 part 'photo_model.g.dart';
@@ -8,53 +9,36 @@ class PhotoModel extends HiveObject {
   String id;
 
   @HiveField(1)
-  String fileName;
+  String name;
 
   @HiveField(2)
-  String localPath;
+  Uint8List imageData;
 
   @HiveField(3)
-  DateTime addedDate;
+  DateTime dateAdded;
 
   @HiveField(4)
-  int fileSize;
-
-  @HiveField(5)
-  String? originalPath;
+  String originalPath;
 
   PhotoModel({
     required this.id,
-    required this.fileName,
-    required this.localPath,
-    required this.addedDate,
-    required this.fileSize,
-    this.originalPath,
+    required this.name,
+    required this.imageData,
+    required this.dateAdded,
+    required this.originalPath,
   });
 
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'fileName': fileName,
-      'localPath': localPath,
-      'addedDate': addedDate.toIso8601String(),
-      'fileSize': fileSize,
-      'originalPath': originalPath,
-    };
-  }
-
-  factory PhotoModel.fromJson(Map<String, dynamic> json) {
+  factory PhotoModel.create({
+    required String name,
+    required Uint8List imageData,
+    required String originalPath,
+  }) {
     return PhotoModel(
-      id: json['id'],
-      fileName: json['fileName'],
-      localPath: json['localPath'],
-      addedDate: DateTime.parse(json['addedDate']),
-      fileSize: json['fileSize'],
-      originalPath: json['originalPath'],
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: name,
+      imageData: imageData,
+      dateAdded: DateTime.now(),
+      originalPath: originalPath,
     );
-  }
-
-  @override
-  String toString() {
-    return 'PhotoModel(id: $id, fileName: $fileName, localPath: $localPath, addedDate: $addedDate, fileSize: $fileSize)';
   }
 }
